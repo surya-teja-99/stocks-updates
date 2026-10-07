@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stocks Updates</title>
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#/dashboard" aria-label="Stocks Updates home">
+    <svg class="brand-mark" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+      <path d="M3 17 L8 12 L12 14 L17 7 L21 9" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M17 7 L21 9 L19 13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <span>Stocks Updates</span>
+  </a>
+  <nav class="topnav" aria-label="Primary">
+    <a href="#/dashboard" data-nav="dashboard">Dashboard</a>
+    <a href="#/directory" data-nav="directory">Directory</a>
+    <a href="#/update" data-nav="update">Log Update</a>
+  </nav>
+  <div class="search-wrap">
+    <input id="global-search" type="search" placeholder="Search ticker or company name…" autocomplete="off" aria-label="Search all stocks">
+    <div id="search-results" class="search-results" hidden></div>
+  </div>
+</header>
+
+<main id="view" class="view" aria-live="polite"></main>
+
+<footer class="footer">
+  <p>Recommendations reflect the owner&rsquo;s personal opinions and are for informational purposes only &mdash; not financial advice.</p>
+</footer>
+
+<nav class="bottomnav" aria-label="Mobile">
+  <a href="#/dashboard" data-nav="dashboard">Dashboard</a>
+  <a href="#/directory" data-nav="directory">Directory</a>
+  <a href="#/update" data-nav="update">Log Update</a>
+</nav>
+
+<div id="toast" class="toast" role="status" hidden></div>
+
+<script src="js/app.js"></script>
+</body>
+</html>
