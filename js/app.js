@@ -202,6 +202,32 @@ const Store = {
     if (!res.ok) throw new Error(data.error || 'Import failed');
     return data;
   },
+
+  /** Paper trades, newest first. */
+  async getPaperTrades() {
+    return api.get('/api/paper-trades');
+  },
+
+  /** Paper portfolio: {positions, totals}, valued at latest logged prices. */
+  async getPaperPortfolio() {
+    return api.get('/api/paper-portfolio');
+  },
+
+  /** Log a paper trade; resolves {trade}. */
+  async addPaperTrade(data) {
+    return api.post('/api/paper-trades', {
+      ticker: data.ticker,
+      date: data.date,
+      side: data.side,
+      shares: data.shares,
+      price: data.price,
+      notes: data.notes,
+    });
+  },
+
+  async deletePaperTrade(id) {
+    await api.del('/api/paper-trades/' + encodeURIComponent(id));
+  },
 };
 
 /* ---------------- dashboard ---------------- */
@@ -699,6 +725,118 @@ function initSearch() {
   });
 }
 
+/* ---------------- paper trading ---------------- */
+function fmtSignedMoney(v) {
+  if (v === null || v === undefined || !isFinite(Number(v))) return '\u2014';
+  const n = Number(v);
+  const cls = n > 0 ? 'pos' : (n < 0 ? 'neg' : 'flat');
+  const sign = n > 0 ? '+' : (n < 0 ? '\u2212' : '');
+  return '<span class="chg ' + cls + '">' + sign + '$'
+    + Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    + '</span>';
+}
+
+async function renderPaper() {
+  const view = $('#view');
+  const { positions, totals } = await Store.getPaperPortfolio();
+  const trades = await Store.getPaperTrades();
+
+  let html = '<div class="page-head"><div><h1>Paper Trading</h1>'
+    + '<p>Practice with fake money. Log paper buys and sells; positions are valued '
+    + 'at the latest price you logged for each stock. Nothing here is real money.</p></div></div>';
+
+  html += '<div class="stats">'
+    + statHtml('$' + fmtPrice(totals.market_value), 'Market value')
+    + statHtml(fmtSignedMoney(totals.unrealized_pl), 'Unrealized P&L')
+    + statHtml(fmtSignedMoney(totals.realized_pl), 'Realized P&L')
+    + '</div>';
+
+  html += '<div class="panel"><h2>Positions</h2>';
+  if (!positions.length) {
+    html += '<div class="empty" style="padding:12px">No paper trades yet \u2014 log your first trade below.</div>';
+  } else {
+    html += '<div class="table-wrap"><table><thead><tr>'
+      + '<th>Ticker</th><th class="num">Shares</th><th class="num">Avg cost</th>'
+      + '<th class="num">Latest price</th><th class="num">Market value</th>'
+      + '<th class="num">Unrealized</th><th class="num">Realized</th>'
+      + '</tr></thead><tbody>'
+      + positions.map((p) => '<tr>'
+        + '<td><a href="#/stock/' + encodeURIComponent(p.ticker) + '"><strong>' + esc(p.ticker) + '</strong></a></td>'
+        + '<td class="num">' + esc(String(p.shares)) + '</td>'
+        + '<td class="num">$' + fmtPrice(p.avg_cost) + '</td>'
+        + '<td class="num">' + (p.latest_price === null ? '\u2014 (no price logged)' : '$' + fmtPrice(p.latest_price)) + '</td>'
+        + '<td class="num">' + (p.market_value === null ? '\u2014' : '$' + fmtPrice(p.market_value)) + '</td>'
+        + '<td class="num">' + fmtSignedMoney(p.unrealized_pl)
+        + (p.unrealized_pct === null ? '' : ' <span class="chg ' + chgClass(p.unrealized_pct) + '">(' + fmtChg(p.unrealized_pct) + ')</span>') + '</td>'
+        + '<td class="num">' + fmtSignedMoney(p.realized_pl) + '</td>'
+        + '</tr>').join('')
+      + '</tbody></table></div>';
+  }
+  html += '</div>';
+
+  html += '<div class="panel"><h2>Log paper trade</h2>'
+    + '<div class="form-grid">'
+    + '<div class="field"><label for="pt-ticker">Ticker</label><input id="pt-ticker" type="text" placeholder="e.g. AAPL" style="text-transform:uppercase"></div>'
+    + '<div class="field"><label for="pt-date">Date</label><input id="pt-date" type="date" value="' + todayISO() + '"></div>'
+    + '<div class="field"><label for="pt-side">Side</label><select id="pt-side"><option value="buy">Buy</option><option value="sell">Sell</option></select></div>'
+    + '<div class="field"><label for="pt-shares">Shares</label><input id="pt-shares" type="number" step="any" min="0" placeholder="e.g. 10"></div>'
+    + '<div class="field"><label for="pt-price">Price</label><input id="pt-price" type="number" step="0.01" min="0" placeholder="e.g. 232.50"></div>'
+    + '<div class="field wide"><label for="pt-notes">Notes</label><textarea id="pt-notes" placeholder="Why this paper trade?\u2026"></textarea></div>'
+    + '</div><div class="form-actions">'
+    + '<button class="btn primary" id="pt-save">Save paper trade</button>'
+    + '</div></div>';
+
+  html += '<div class="panel"><h2>Trade history (' + trades.length + ')</h2>';
+  if (!trades.length) {
+    html += '<div class="empty" style="padding:12px">Nothing here yet.</div>';
+  } else {
+    html += '<div class="table-wrap"><table><thead><tr>'
+      + '<th>Date</th><th>Ticker</th><th>Side</th><th class="num">Shares</th>'
+      + '<th class="num">Price</th><th class="hide-m">Notes</th><th><span class="hide-m">Actions</span></th>'
+      + '</tr></thead><tbody>'
+      + trades.map((t) => '<tr data-id="' + t.id + '">'
+        + '<td>' + fmtDate(t.date) + '</td>'
+        + '<td><strong>' + esc(t.stock_ticker) + '</strong></td>'
+        + '<td>' + (t.side === 'buy'
+            ? '<span class="chg pos">Buy</span>' : '<span class="chg neg">Sell</span>') + '</td>'
+        + '<td class="num">' + esc(String(t.shares)) + '</td>'
+        + '<td class="num">$' + fmtPrice(t.price) + '</td>'
+        + '<td class="hide-m">' + esc(snippet(t.notes, 60)) + '</td>'
+        + '<td class="row-actions"><button class="btn small danger" data-act="del">Delete</button></td>'
+        + '</tr>').join('')
+      + '</tbody></table></div>';
+  }
+  html += '</div>';
+
+  view.innerHTML = html;
+
+  $('#pt-save').addEventListener('click', async () => {
+    try {
+      await Store.addPaperTrade({
+        ticker: $('#pt-ticker').value,
+        date: $('#pt-date').value,
+        side: $('#pt-side').value,
+        shares: $('#pt-shares').value,
+        price: $('#pt-price').value,
+        notes: $('#pt-notes').value,
+      });
+      toast('Paper trade saved.');
+      await renderPaper();
+    } catch (e) { toast('Error: ' + e.message); }
+  });
+
+  view.querySelectorAll('tr[data-id] [data-act="del"]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Delete this paper trade? Positions will be recalculated.')) return;
+      try {
+        await Store.deletePaperTrade(btn.closest('tr').getAttribute('data-id'));
+        toast('Paper trade deleted.');
+        await renderPaper();
+      } catch (e) { toast('Error: ' + e.message); }
+    });
+  });
+}
+
 /* ---------------- research: external analyst-rating sources ---------------- */
 const RESEARCH_LINKS = [
   { name: 'Yahoo Finance', desc: 'Analyst buy/hold/sell breakdowns, upgrades and downgrades, market news.', url: 'https://finance.yahoo.com/' },
@@ -742,6 +880,7 @@ async function router() {
     else if (page === 'stock' && param) { setActiveNav(''); await renderDetail(param); }
     else if (page === 'update') { setActiveNav('update'); editorIdx = 0; await renderEditor(param); }
     else if (page === 'research') { setActiveNav('research'); renderResearch(); }
+    else if (page === 'paper') { setActiveNav('paper'); await renderPaper(); }
     else { setActiveNav('dashboard'); await renderDashboard(); }
   } catch (e) {
     $('#view').innerHTML = '<div class="panel"><div class="empty">Something went wrong:<br>' + esc(e.message) + '</div></div>';

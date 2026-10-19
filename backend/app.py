@@ -48,6 +48,17 @@ CREATE TABLE IF NOT EXISTS daily_updates (
     UNIQUE (stock_ticker, date)
 );
 CREATE INDEX IF NOT EXISTS idx_updates_ticker_date ON daily_updates (stock_ticker, date);
+CREATE TABLE IF NOT EXISTS paper_trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    stock_ticker TEXT NOT NULL REFERENCES stocks(ticker),
+    date TEXT NOT NULL,
+    side TEXT NOT NULL,
+    shares REAL NOT NULL,
+    price REAL NOT NULL,
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_trades_ticker_date ON paper_trades (stock_ticker, date, id);
 """
 
 # Auto-rating ("breakout") rule: strong single-day moves are bucketed into
@@ -460,6 +471,154 @@ def api_import():
         else:
             imported += 1
     return jsonify({"imported": imported, "updated": updated, "skipped": skipped, "errors": errors})
+
+
+# ---------------------------------------------------------- paper trading
+def validate_trade_payload(data, db):
+    """Validate a paper-trade payload. Returns (clean_dict, error_message)."""
+    ticker = str(data.get("ticker") or "").upper().strip()
+    date = str(data.get("date") or "").strip()
+    side = str(data.get("side") or "").strip().lower()
+    notes = str(data.get("notes") or "")
+    if not ticker:
+        return None, "ticker is required"
+    if not ticker_exists(db, ticker):
+        return None, "unknown ticker: " + ticker
+    if not DATE_RE.match(date):
+        return None, "date must be YYYY-MM-DD"
+    if side not in ("buy", "sell"):
+        return None, "side must be 'buy' or 'sell'"
+    try:
+        shares = float(data.get("shares"))
+    except (TypeError, ValueError):
+        return None, "shares must be a number"
+    if shares <= 0:
+        return None, "shares must be positive"
+    try:
+        price = float(data.get("price"))
+    except (TypeError, ValueError):
+        return None, "price must be a number"
+    if price < 0:
+        return None, "price must be non-negative"
+    return {
+        "ticker": ticker,
+        "date": date,
+        "side": side,
+        "shares": shares,
+        "price": price,
+        "notes": notes,
+    }, None
+
+
+def paper_shares(db, ticker):
+    """Net paper shares currently held for a ticker."""
+    row = db.execute(
+        """SELECT COALESCE(SUM(CASE WHEN side = 'buy' THEN shares ELSE -shares END), 0) AS s
+           FROM paper_trades WHERE stock_ticker = ?""",
+        (ticker,)).fetchone()
+    return row["s"] or 0.0
+
+
+def paper_portfolio(db):
+    """Average-cost positions from paper trades, valued at latest logged prices.
+
+    Returns (positions, totals). Positions with no logged price yet get
+    latest_price/market_value/unrealized_* = None.
+    """
+    trades = db.execute(
+        "SELECT * FROM paper_trades ORDER BY date, id").fetchall()
+    pos = {}
+    for t in trades:
+        p = pos.setdefault(t["stock_ticker"],
+                           {"shares": 0.0, "cost": 0.0, "realized": 0.0})
+        if t["side"] == "buy":
+            p["shares"] += t["shares"]
+            p["cost"] += t["shares"] * t["price"]
+        else:
+            avg = p["cost"] / p["shares"] if p["shares"] > 0 else 0.0
+            p["realized"] += (t["price"] - avg) * t["shares"]
+            p["shares"] -= t["shares"]
+            p["cost"] -= avg * t["shares"]
+    latest = {r["stock_ticker"]: r["price"] for r in db.execute(
+        """SELECT stock_ticker, price FROM daily_updates u
+           WHERE date = (SELECT MAX(date) FROM daily_updates
+                         WHERE stock_ticker = u.stock_ticker)""").fetchall()}
+    positions = []
+    for ticker in sorted(pos):
+        p = pos[ticker]
+        avg_cost = p["cost"] / p["shares"] if p["shares"] > 1e-9 else 0.0
+        lp = latest.get(ticker)
+        mv = lp * p["shares"] if lp is not None else None
+        upl = (lp - avg_cost) * p["shares"] if lp is not None else None
+        positions.append({
+            "ticker": ticker,
+            "shares": round(p["shares"], 6),
+            "avg_cost": round(avg_cost, 4),
+            "latest_price": lp,
+            "market_value": round(mv, 2) if mv is not None else None,
+            "unrealized_pl": round(upl, 2) if upl is not None else None,
+            "unrealized_pct": (round(upl / p["cost"] * 100, 2)
+                               if upl is not None and p["cost"] > 0 else None),
+            "realized_pl": round(p["realized"], 2),
+        })
+    totals = {
+        "market_value": round(sum(x["market_value"] for x in positions
+                                  if x["market_value"] is not None), 2),
+        "unrealized_pl": round(sum(x["unrealized_pl"] for x in positions
+                                   if x["unrealized_pl"] is not None), 2),
+        "realized_pl": round(sum(x["realized_pl"] for x in positions), 2),
+    }
+    return positions, totals
+
+
+@app.route("/api/paper-trades", methods=["GET"])
+def api_paper_trades():
+    db = get_db()
+    rows = db.execute(
+        "SELECT * FROM paper_trades ORDER BY date DESC, id DESC").fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/paper-trades", methods=["POST"])
+def api_paper_trade_add():
+    db = get_db()
+    clean, err = validate_trade_payload(
+        request.get_json(force=True, silent=True) or {}, db)
+    if err:
+        return jsonify({"error": err}), 400
+    if clean["side"] == "sell":
+        held = paper_shares(db, clean["ticker"])
+        if clean["shares"] > held + 1e-9:
+            return jsonify({"error": "you only hold %.4g paper shares of %s"
+                                     % (held, clean["ticker"])}), 400
+    now = utcnow()
+    cur = db.execute(
+        """INSERT INTO paper_trades
+           (stock_ticker, date, side, shares, price, notes, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (clean["ticker"], clean["date"], clean["side"], clean["shares"],
+         clean["price"], clean["notes"], now))
+    db.commit()
+    row = db.execute("SELECT * FROM paper_trades WHERE id = ?",
+                     (cur.lastrowid,)).fetchone()
+    return jsonify({"trade": dict(row)}), 201
+
+
+@app.route("/api/paper-trades/<int:tid>", methods=["DELETE"])
+def api_paper_trade_delete(tid):
+    db = get_db()
+    cur = db.execute("DELETE FROM paper_trades WHERE id = ?", (tid,))
+    db.commit()
+    if not cur.rowcount:
+        return jsonify({"error": "trade not found"}), 404
+    return jsonify({"deleted": tid})
+
+
+@app.route("/api/paper-portfolio")
+def api_paper_portfolio():
+    db = get_db()
+    positions, totals = paper_portfolio(db)
+    return jsonify({"positions": positions, "totals": totals})
 
 
 if __name__ == "__main__":
