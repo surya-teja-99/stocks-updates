@@ -14,12 +14,15 @@ import csv
 import io
 import os
 import re
+import secrets
 import sqlite3
 from datetime import datetime, timezone
 
-from flask import Flask, Response, g, jsonify, request, send_from_directory
+from flask import Flask, Response, g, jsonify, redirect, request, send_from_directory, session
+from werkzeug.security import check_password_hash
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(ROOT, "stocks.db")
 
 RATINGS = ("strong_buy", "buy", "hold", "sell", "strong_sell")
@@ -92,6 +95,107 @@ def suggest_rating(change_percent):
 
 
 app = Flask(__name__, static_folder=ROOT, static_url_path="")
+
+
+# ------------------------------------------------------------ login gate
+def _read_secret_file(name, generator):
+    """Read a gitignored secret file, creating it with generator() if missing."""
+    path = os.path.join(BACKEND_DIR, name)
+    try:
+        with open(path) as f:
+            value = f.read().strip()
+            if value:
+                return value
+    except OSError:
+        pass
+    value = generator()
+    with open(path, "w") as f:
+        f.write(value)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return value
+
+
+def get_password_hash():
+    """Salted password hash set via `python backend/set_password.py`, or None."""
+    path = os.path.join(BACKEND_DIR, ".app_password")
+    try:
+        with open(path) as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
+app.secret_key = os.environ.get("SECRET_KEY") or _read_secret_file(
+    ".secret_key", lambda: secrets.token_hex(32))
+
+
+def login_required_active():
+    return get_password_hash() is not None
+
+
+@app.before_request
+def require_login():
+    # Login page, logout and static assets are always reachable.
+    if request.path in ("/login", "/logout") or request.path.startswith(
+            ("/js/", "/css/", "/favicon.ico")):
+        return None
+    if not login_required_active() or session.get("logged_in"):
+        return None
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "login required"}), 401
+    return redirect("/login")
+
+
+LOGIN_PAGE = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Login \\u2014 Stocks Updates</title>
+<style>
+body{background:#0b0f17;color:#e8ecf3;font-family:system-ui,sans-serif;
+display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+.box{background:#121826;border:1px solid #1f2942;border-radius:12px;padding:32px;width:min(360px,90vw)}
+h1{margin:0 0 6px;font-size:1.3rem}p{color:#8d99ae;font-size:.9rem;margin:0 0 16px}
+input{width:100%;box-sizing:border-box;background:#0b0f17;border:1px solid #2a3654;color:#e8ecf3;
+border-radius:8px;padding:10px;margin-bottom:12px;font-size:1rem}
+button{width:100%;background:#5b9bff;border:0;color:#06101f;font-weight:700;border-radius:8px;
+padding:11px;font-size:1rem;cursor:pointer}
+.err{color:#ff7b7b;font-size:.88rem;margin-bottom:12px;min-height:1.2em}
+</style></head><body><div class="box">
+<h1>Stocks Updates</h1><p>This journal is private. Please log in.</p>
+<div class="err">__ERROR__</div>
+<form method="post"><input type="password" name="password" placeholder="Password" autofocus>
+<button type="submit">Log in</button></form>
+</div></body></html>"""
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not login_required_active():
+        return redirect("/")
+    if request.method == "POST":
+        if check_password_hash(get_password_hash(),
+                               request.form.get("password", "")):
+            session["logged_in"] = True
+            return redirect("/")
+        return LOGIN_PAGE.replace("__ERROR__", "Wrong password. Try again.")
+    if session.get("logged_in"):
+        return redirect("/")
+    return LOGIN_PAGE.replace("__ERROR__", "")
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect("/login")
+
+
+@app.route("/api/me")
+def api_me():
+    return jsonify({"login_required": login_required_active(),
+                    "logged_in": bool(session.get("logged_in"))})
 
 
 def utcnow():
@@ -230,6 +334,13 @@ def api_suggest_rating():
         return jsonify({"error": rule}), 400
     return jsonify({"rating": rating, "rule": rule,
                     "change_percent": float(raw)})
+
+
+@app.route("/api/ml-signal/<ticker>")
+def api_ml_signal(ticker):
+    """ML signal for one ticker: predicted direction + learned rating suggestion."""
+    from backend.ml_signals import signal_for
+    return jsonify(signal_for(get_db(), ticker))
 
 
 @app.route("/api/stocks")

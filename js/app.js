@@ -93,6 +93,10 @@ async function apiFetch(path, opts) {
     data = ct.includes('application/json') ? await res.json() : await res.text();
   } catch (e) { /* ignore parse errors */ }
   if (!res.ok) {
+    if (res.status === 401 && path.startsWith('/api/')) {
+      window.location.href = '/login';
+      throw new Error('Login required');
+    }
     const msg = (data && data.error) || ('Request failed with status ' + res.status);
     throw new Error(msg);
   }
@@ -422,6 +426,9 @@ async function renderDetail(ticker) {
   }
   const onWl = Store.isOnWatchlist(ticker);
   const latest = updates[0] || null;
+  let mlSignal = null;
+  try { mlSignal = await api.get('/api/ml-signal/' + encodeURIComponent(ticker)); }
+  catch (e) { mlSignal = null; }
 
   let html = ''
     + '<div class="detail-head"><div>'
@@ -441,6 +448,24 @@ async function renderDetail(ticker) {
       + (latest.notes ? '<p class="note-snippet">' + esc(latest.notes) + '</p>' : '');
   } else {
     html += '<div class="empty" style="padding:12px">No updates logged yet for ' + esc(ticker) + '.<br><a class="btn primary small" style="margin-top:10px" href="#/update/' + encodeURIComponent(ticker) + '">Log the first one</a></div>';
+  }
+  html += '</div>';
+
+  html += '<div class="panel"><h2>ML signal</h2>';
+  if (mlSignal && mlSignal.trained) {
+    const dirCls = mlSignal.direction === 'up' ? 'pos' : 'neg';
+    const arrow = mlSignal.direction === 'up' ? '\u25B2' : '\u25BC';
+    html += '<div class="price-row"><span class="chg ' + dirCls + '">' + arrow + ' ' + mlSignal.direction + '</span>'
+      + '<span class="card-meta">' + Math.round(mlSignal.confidence * 100) + '% confidence</span>'
+      + ratingBadge(mlSignal.suggested_rating) + '</div>'
+      + '<p class="note-snippet">The model suggests <strong>' + esc(RATINGS[mlSignal.suggested_rating].label) + '</strong>, '
+      + 'learned from patterns in your journal. Trained on ' + mlSignal.samples + ' updates'
+      + ((mlSignal.accuracy === null || mlSignal.accuracy === undefined)
+        ? '' : ' \u00b7 holdout accuracy ' + Math.round(mlSignal.accuracy * 100) + '%')
+      + '. Experimental \u2014 your judgment comes first.</p>';
+  } else {
+    html += '<div class="empty" style="padding:12px">'
+      + esc((mlSignal && mlSignal.reason) || 'ML signal unavailable right now.') + '</div>';
   }
   html += '</div>';
 
@@ -618,7 +643,7 @@ async function renderEditor(preselect) {
     + '<div class="field"><label for="ed-chg">Change %</label><input id="ed-chg" type="number" step="0.01" placeholder="e.g. 1.25"></div>'
     + '<div class="field"><label for="ed-rating">Rating</label><select id="ed-rating">'
     + RATING_KEYS.map((k) => '<option value="' + k + '">' + esc(RATINGS[k].label) + '</option>').join('')
-    + '</select><small class="auto-hint" id="ed-rating-hint"></small></div>'
+    + '</select><small class="auto-hint" id="ed-rating-hint"></small><small class="auto-hint" id="ed-ml-hint"></small></div>'
     + '<div class="field wide"><label for="ed-notes">Notes</label><textarea id="ed-notes" placeholder="Why this rating? Key observations\u2026"></textarea></div>'
     + '</div><div class="form-actions">'
     + '<button class="btn primary" id="ed-save">Save update</button>'
@@ -645,6 +670,17 @@ async function renderEditor(preselect) {
   $('#step-next').addEventListener('click', () => go(1));
   $('#ed-stock').addEventListener('change', (e) => { editorIdx = Number(e.target.value); renderEditor(null); });
   $('#ed-chg').addEventListener('input', () => autoSuggestRating($('#ed-chg'), $('#ed-rating'), $('#ed-rating-hint')));
+
+  try {
+    const sig = await api.get('/api/ml-signal/' + encodeURIComponent(stock.ticker));
+    const mh = $('#ed-ml-hint');
+    if (mh) {
+      mh.textContent = sig.trained
+        ? 'ML: predicts ' + sig.direction + ' (' + Math.round(sig.confidence * 100) + '%) \u2192 suggests '
+          + RATINGS[sig.suggested_rating].label + ' \u00b7 trained on ' + sig.samples + ' updates'
+        : 'ML: ' + sig.reason;
+    }
+  } catch (e) { /* leave the ML hint blank */ }
 
   $('#ed-save').addEventListener('click', async () => {
     try {
