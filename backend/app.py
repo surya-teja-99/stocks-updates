@@ -12,6 +12,7 @@ the seed data with `python backend/seed.py`.
 
 import csv
 import io
+import json
 import os
 import re
 import secrets
@@ -118,14 +119,20 @@ def _read_secret_file(name, generator):
     return value
 
 
-def get_password_hash():
-    """Salted password hash set via `python backend/set_password.py`, or None."""
+def get_credentials():
+    """Owner login credentials set via `python backend/set_password.py`.
+
+    Returns {"email": ..., "password_hash": ...}, or None if not configured.
+    """
     path = os.path.join(BACKEND_DIR, ".app_password")
     try:
         with open(path) as f:
-            return f.read().strip() or None
-    except OSError:
-        return None
+            data = json.load(f)
+        if data.get("email") and data.get("password_hash"):
+            return data
+    except (OSError, ValueError):
+        pass
+    return None
 
 
 app.secret_key = os.environ.get("SECRET_KEY") or _read_secret_file(
@@ -133,7 +140,7 @@ app.secret_key = os.environ.get("SECRET_KEY") or _read_secret_file(
 
 
 def login_required_active():
-    return get_password_hash() is not None
+    return get_credentials() is not None
 
 
 @app.before_request
@@ -164,9 +171,10 @@ button{width:100%;background:#5b9bff;border:0;color:#06101f;font-weight:700;bord
 padding:11px;font-size:1rem;cursor:pointer}
 .err{color:#ff7b7b;font-size:.88rem;margin-bottom:12px;min-height:1.2em}
 </style></head><body><div class="box">
-<h1>Stocks Updates</h1><p>This journal is private. Please log in.</p>
+<h1>Stocks Updates</h1><p>Log in to your journal.</p>
 <div class="err">__ERROR__</div>
-<form method="post"><input type="password" name="password" placeholder="Password" autofocus>
+<form method="post"><input type="email" name="email" placeholder="Email" autocomplete="username" autofocus>
+<input type="password" name="password" placeholder="Password" autocomplete="current-password">
 <button type="submit">Log in</button></form>
 </div></body></html>"""
 
@@ -176,11 +184,16 @@ def login():
     if not login_required_active():
         return redirect("/")
     if request.method == "POST":
-        if check_password_hash(get_password_hash(),
-                               request.form.get("password", "")):
+        creds = get_credentials()
+        email = request.form.get("email", "").strip().lower()
+        ok = (creds is not None
+              and email == creds["email"].lower()
+              and check_password_hash(creds["password_hash"],
+                                      request.form.get("password", "")))
+        if ok:
             session["logged_in"] = True
             return redirect("/")
-        return LOGIN_PAGE.replace("__ERROR__", "Wrong password. Try again.")
+        return LOGIN_PAGE.replace("__ERROR__", "Wrong email or password. Try again.")
     if session.get("logged_in"):
         return redirect("/")
     return LOGIN_PAGE.replace("__ERROR__", "")
