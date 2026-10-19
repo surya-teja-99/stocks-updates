@@ -27,7 +27,7 @@ RATING_TO_INT = {"strong_sell": -2, "sell": -1, "hold": 0, "buy": 1,
                  "strong_buy": 2}
 INT_TO_RATING = {v: k for k, v in RATING_TO_INT.items()}
 
-_cache = {"key": None, "bundle": None}
+_cache = {}  # user_id -> {"key": ..., "bundle": ...}
 
 
 def _bucket(change_pct):
@@ -56,10 +56,11 @@ def _features(hist, current):
             float(RATING_TO_INT.get(rating, 0))]
 
 
-def _build_dataset(db):
+def _build_dataset(db, user_id):
     rows = db.execute(
         "SELECT stock_ticker, date, price, change_percent, rating "
-        "FROM daily_updates ORDER BY stock_ticker, date").fetchall()
+        "FROM daily_updates WHERE user_id = ? ORDER BY stock_ticker, date",
+        (user_id,)).fetchall()
     samples = []  # (date, features, y_dir, y_rating)
     by_ticker = {}
     for r in rows:
@@ -81,14 +82,14 @@ def _build_dataset(db):
     return samples
 
 
-def _train(db):
+def _train(db, user_id):
     """Train both models. Returns bundle dict or None if not enough data."""
     try:
         from sklearn.linear_model import LogisticRegression
     except ImportError:
         return {"error": "scikit-learn is not installed "
                          "(run: pip install -r requirements.txt)"}
-    samples = _build_dataset(db)
+    samples = _build_dataset(db, user_id)
     if len(samples) < MIN_SAMPLES:
         return None
     X = [s[1] for s in samples]
@@ -104,12 +105,12 @@ def _train(db):
             "samples": len(samples), "accuracy": accuracy}
 
 
-def _ticker_features(db, ticker):
+def _ticker_features(db, ticker, user_id):
     """Trailing features for one ticker's latest update, or None."""
     ups = db.execute(
         "SELECT date, price, change_percent, rating FROM daily_updates "
-        "WHERE stock_ticker = ? ORDER BY date DESC LIMIT 6",
-        (ticker,)).fetchall()
+        "WHERE user_id = ? AND stock_ticker = ? ORDER BY date DESC LIMIT 6",
+        (user_id, ticker)).fetchall()
     if len(ups) < 6:
         return None
     latest = ups[0]
@@ -119,21 +120,24 @@ def _ticker_features(db, ticker):
                             latest["rating"], latest["date"]))
 
 
-def _data_key(db):
+def _data_key(db, user_id):
     row = db.execute(
-        "SELECT COUNT(*) AS c, MAX(id) AS m FROM daily_updates").fetchone()
-    return (row["c"] or 0, row["m"] or 0)
+        "SELECT COUNT(*) AS c, MAX(id) AS m FROM daily_updates WHERE user_id = ?",
+        (user_id,)).fetchone()
+    return (user_id, row["c"] or 0, row["m"] or 0)
 
 
-def signal_for(db, ticker):
+def signal_for(db, ticker, user_id):
     """ML signal for one ticker. Always returns a JSON-serializable dict."""
     ticker = (ticker or "").upper().strip()
-    key = _data_key(db)
-    count = key[0]
-    if _cache["key"] != key:
-        _cache["key"] = key
-        _cache["bundle"] = _train(db) if count >= MIN_SAMPLES else None
-    bundle = _cache["bundle"]
+    key = _data_key(db, user_id)
+    count = key[1]
+    entry = _cache.get(user_id)
+    if entry is None or entry["key"] != key:
+        entry = {"key": key,
+                 "bundle": _train(db, user_id) if count >= MIN_SAMPLES else None}
+        _cache[user_id] = entry
+    bundle = entry["bundle"]
     if bundle is None:
         if count >= MIN_SAMPLES:
             reason = ("Not enough usable history yet: each ticker needs 7+ "
@@ -145,7 +149,7 @@ def signal_for(db, ticker):
                 "have": count, "need": MIN_SAMPLES}
     if "error" in bundle:
         return {"trained": False, "reason": bundle["error"]}
-    feats = _ticker_features(db, ticker)
+    feats = _ticker_features(db, ticker, user_id)
     if feats is None:
         return {"trained": False,
                 "reason": "Not enough history for %s yet (needs 6 logged "

@@ -1,5 +1,4 @@
 venv/
 *.db
 __pycache__/
-backend/.app_password
 backend/.secret_key

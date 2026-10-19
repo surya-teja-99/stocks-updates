@@ -12,7 +12,6 @@ the seed data with `python backend/seed.py`.
 
 import csv
 import io
-import json
 import os
 import re
 import secrets
@@ -20,7 +19,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 from flask import Flask, Response, g, jsonify, redirect, request, send_from_directory, session
-from werkzeug.security import check_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -63,6 +62,19 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_trades_ticker_date ON paper_trades (stock_ticker, date, id);
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    recovery_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS user_watchlist (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    ticker TEXT NOT NULL REFERENCES stocks(ticker),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, ticker)
+);
 """
 
 # Auto-rating ("breakout") rule: strong single-day moves are bucketed into
@@ -98,7 +110,10 @@ def suggest_rating(change_percent):
 app = Flask(__name__, static_folder=ROOT, static_url_path="")
 
 
-# ------------------------------------------------------------ login gate
+# ------------------------------------------------------------ user accounts
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
 def _read_secret_file(name, generator):
     """Read a gitignored secret file, creating it with generator() if missing."""
     path = os.path.join(BACKEND_DIR, name)
@@ -119,50 +134,34 @@ def _read_secret_file(name, generator):
     return value
 
 
-def get_credentials():
-    """Owner login credentials set via `python backend/set_password.py`.
-
-    Returns {"email": ..., "password_hash": ...}, or None if not configured.
-    """
-    path = os.path.join(BACKEND_DIR, ".app_password")
-    try:
-        with open(path) as f:
-            data = json.load(f)
-        if data.get("email") and data.get("password_hash"):
-            return data
-    except (OSError, ValueError):
-        pass
-    return None
-
-
 app.secret_key = os.environ.get("SECRET_KEY") or _read_secret_file(
     ".secret_key", lambda: secrets.token_hex(32))
 
 
-def login_required_active():
-    return get_credentials() is not None
+def current_user_id():
+    return session.get("user_id")
 
 
 @app.before_request
 def require_login():
-    # Login page, logout and static assets are always reachable.
-    if request.path in ("/login", "/logout") or request.path.startswith(
+    # Auth pages, login-status endpoint and static assets are always reachable.
+    if request.path in ("/login", "/logout", "/signup", "/forgot", "/api/me") or request.path.startswith(
             ("/js/", "/css/", "/favicon.ico")):
         return None
-    if not login_required_active() or session.get("logged_in"):
+    if current_user_id():
         return None
     if request.path.startswith("/api/"):
         return jsonify({"error": "login required"}), 401
     return redirect("/login")
 
 
-LOGIN_PAGE = """<!DOCTYPE html>
+AUTH_PAGE = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Log in — Stocks Updates</title>
+<title>__TITLE__ \u2014 Stocks Updates</title>
 <style>
 body{background:#060a13;color:#f1f5fb;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;
-display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;
+display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:20px;box-sizing:border-box;
 background-image:radial-gradient(900px 480px at 85% -10%,rgba(91,155,255,.1),transparent 60%),radial-gradient(700px 420px at 10% 0%,rgba(143,107,255,.08),transparent 60%)}
 .box{background:linear-gradient(180deg,rgba(26,36,64,.6),rgba(14,21,36,.95));border:1px solid rgba(148,163,184,.16);
 border-radius:16px;padding:36px;width:min(380px,92vw);box-shadow:0 18px 60px rgba(0,0,0,.5);animation:rise .5s cubic-bezier(.22,.68,.32,1)}
@@ -174,39 +173,185 @@ p{color:#93a0b8;font-size:.9rem;margin:0 0 20px;line-height:1.5}
 input{width:100%;box-sizing:border-box;background:rgba(6,10,19,.8);border:1px solid #26314d;color:#f1f5fb;
 border-radius:10px;padding:11px 13px;margin-bottom:12px;font-size:1rem;transition:border-color .18s,box-shadow .18s}
 input:focus{outline:none;border-color:rgba(91,155,255,.6);box-shadow:0 0 0 3px rgba(91,155,255,.16)}
-button{width:100%;background:linear-gradient(135deg,#4f8cff,#7a5cff);border:0;color:#fff;font-weight:700;border-radius:10px;
-padding:12px;font-size:1rem;cursor:pointer;box-shadow:0 6px 22px rgba(99,132,255,.38);transition:transform .16s,box-shadow .18s,filter .18s}
-button:hover{transform:translateY(-1px);filter:brightness(1.06);box-shadow:0 10px 30px rgba(99,132,255,.5)}
-button:active{transform:translateY(1px)}
+button,.abtn{width:100%;box-sizing:border-box;background:linear-gradient(135deg,#4f8cff,#7a5cff);border:0;color:#fff;font-weight:700;border-radius:10px;
+padding:12px;font-size:1rem;cursor:pointer;box-shadow:0 6px 22px rgba(99,132,255,.38);transition:transform .16s,box-shadow .18s,filter .18s;
+display:block;text-align:center;text-decoration:none;font-family:inherit}
+button:hover,.abtn:hover{transform:translateY(-1px);filter:brightness(1.06);box-shadow:0 10px 30px rgba(99,132,255,.5);color:#fff}
+button:active,.abtn:active{transform:translateY(1px)}
 .err{color:#fda4af;font-size:.88rem;margin-bottom:12px;min-height:1.2em}
+.links{margin-top:18px;font-size:.88rem;color:#93a0b8;text-align:center;line-height:2}
+.links a{color:#5b9bff;text-decoration:none}
+.links a:hover{text-decoration:underline}
+.recovery{background:rgba(6,10,19,.85);border:1px dashed rgba(91,155,255,.55);border-radius:10px;
+padding:15px;font-size:1.3rem;font-weight:800;letter-spacing:.14em;text-align:center;margin:6px 0 18px;color:#cfe1ff}
+.warn{color:#f3cd6a;font-size:.86rem;line-height:1.55;margin-bottom:14px}
+.ok{color:#4ade80;font-size:.88rem;margin-bottom:12px;min-height:1.2em}
 </style></head><body><div class="box">
 <div class="mark"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17 L8 12 L12 14 L17 7 L21 9"/><path d="M17 7 L21 9 L19 13"/></svg></div>
-<h1>Welcome back</h1><p>Log in to your Stocks Updates journal.</p>
+<h1>__HEADING__</h1><p>__SUB__</p>
 <div class="err">__ERROR__</div>
-<form method="post"><input type="email" name="email" placeholder="Email" autocomplete="username" autofocus>
-<input type="password" name="password" placeholder="Password" autocomplete="current-password">
-<button type="submit">Log in</button></form>
+__BODY__
+<div class="links">__LINKS__</div>
 </div></body></html>"""
+
+
+def render_auth(title, heading, sub, error="", body="", links=""):
+    html = AUTH_PAGE
+    for token, val in (("__TITLE__", title), ("__HEADING__", heading),
+                       ("__SUB__", sub), ("__ERROR__", error),
+                       ("__BODY__", body), ("__LINKS__", links)):
+        html = html.replace(token, val)
+    return html
+
+
+def _login_form():
+    return ('<form method="post">'
+            '<input type="email" name="email" placeholder="Email" autocomplete="username" autofocus>'
+            '<input type="password" name="password" placeholder="Password" autocomplete="current-password">'
+            '<button type="submit">Log in</button></form>')
+
+
+def _signup_form():
+    return ('<form method="post">'
+            '<input type="email" name="email" placeholder="Email" autocomplete="username" autofocus>'
+            '<input type="password" name="password" placeholder="Password (min 8 characters)" autocomplete="new-password">'
+            '<input type="password" name="password2" placeholder="Confirm password" autocomplete="new-password">'
+            '<button type="submit">Sign up</button></form>')
+
+
+def _forgot_form():
+    return ('<form method="post"><input type="hidden" name="stage" value="identify">'
+            '<input type="email" name="email" placeholder="Email" autocomplete="username" autofocus>'
+            '<input type="text" name="code" placeholder="Recovery code (xxxx-xxxx-xxxx)" autocomplete="off">'
+            '<button type="submit">Verify</button></form>')
+
+
+def _reset_form():
+    return ('<form method="post"><input type="hidden" name="stage" value="reset">'
+            '<input type="password" name="password" placeholder="New password (min 8 characters)" autocomplete="new-password" autofocus>'
+            '<input type="password" name="password2" placeholder="Confirm new password" autocomplete="new-password">'
+            '<button type="submit">Set new password</button></form>')
+
+
+def _new_recovery_code():
+    raw = secrets.token_hex(6)
+    return "-".join(raw[i:i + 4] for i in range(0, 12, 4))
+
+
+def _adopt_legacy_data(db, user_id):
+    """The first registered user inherits the pre-accounts journal data."""
+    if db.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] != 1:
+        return
+    now = utcnow()
+    db.execute("UPDATE daily_updates SET user_id = ? WHERE user_id IS NULL", (user_id,))
+    db.execute("UPDATE paper_trades SET user_id = ? WHERE user_id IS NULL", (user_id,))
+    db.execute("""INSERT OR IGNORE INTO user_watchlist (user_id, ticker, created_at)
+                  SELECT ?, ticker, ? FROM stocks WHERE on_watchlist = 1""",
+               (user_id, now))
+
+
+LOGIN_LINKS = '<a href="/signup">Sign up</a> &nbsp;&middot;&nbsp; <a href="/forgot">Forgot password?</a>'
+BACK_LINKS = '<a href="/login">Back to log in</a>'
 
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    if not login_required_active():
+    if current_user_id():
         return redirect("/")
     if request.method == "POST":
-        creds = get_credentials()
+        db = get_db()
         email = request.form.get("email", "").strip().lower()
-        ok = (creds is not None
-              and email == creds["email"].lower()
-              and check_password_hash(creds["password_hash"],
-                                      request.form.get("password", "")))
-        if ok:
-            session["logged_in"] = True
+        row = db.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+        if row and check_password_hash(row["password_hash"], request.form.get("password", "")):
+            session["user_id"] = row["id"]
             return redirect("/")
-        return LOGIN_PAGE.replace("__ERROR__", "Wrong email or password. Try again.")
-    if session.get("logged_in"):
+        return render_auth("Log in", "Welcome back", "Log in to your Stocks Updates journal.",
+                           "Wrong email or password. Try again.", _login_form(), LOGIN_LINKS)
+    return render_auth("Log in", "Welcome back", "Log in to your Stocks Updates journal.",
+                       "", _login_form(), LOGIN_LINKS)
+
+
+@app.route("/signup", methods=["GET", "POST"])
+def signup():
+    if current_user_id():
         return redirect("/")
-    return LOGIN_PAGE.replace("__ERROR__", "")
+    if request.method == "POST":
+        db = get_db()
+        email = request.form.get("email", "").strip().lower()
+        pw = request.form.get("password", "")
+        pw2 = request.form.get("password2", "")
+        if not EMAIL_RE.match(email):
+            error = "Enter a valid email address."
+        elif len(pw) < 8:
+            error = "Password must be at least 8 characters."
+        elif pw != pw2:
+            error = "Passwords do not match."
+        elif db.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone():
+            error = "An account with this email already exists. Try logging in."
+        else:
+            error = None
+        if error:
+            return render_auth("Sign up", "Create your account",
+                               "Your journal is private to you.",
+                               error, _signup_form(), BACK_LINKS)
+        code = _new_recovery_code()
+        cur = db.execute(
+            "INSERT INTO users (email, password_hash, recovery_hash, created_at)"
+            " VALUES (?, ?, ?, ?)",
+            (email, generate_password_hash(pw), generate_password_hash(code), utcnow()))
+        _adopt_legacy_data(db, cur.lastrowid)
+        db.commit()
+        session["user_id"] = cur.lastrowid
+        body = ('<div class="warn">Save this recovery code somewhere safe &mdash; '
+                'it is the <strong>only</strong> way to reset your password if you forget it.</div>'
+                '<div class="recovery">' + code + '</div>'
+                '<a class="abtn" href="/">Continue to your journal</a>')
+        return render_auth("Account created", "You\u2019re in!",
+                           "Your private journal is ready.", "", body, "")
+    return render_auth("Sign up", "Create your account",
+                       "Your journal is private to you.", "", _signup_form(), BACK_LINKS)
+
+
+@app.route("/forgot", methods=["GET", "POST"])
+def forgot():
+    if current_user_id():
+        return redirect("/")
+    if request.method == "POST":
+        db = get_db()
+        if request.form.get("stage", "identify") == "identify":
+            email = request.form.get("email", "").strip().lower()
+            code = request.form.get("code", "").strip()
+            row = db.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+            if row and check_password_hash(row["recovery_hash"], code):
+                session["pw_reset_user"] = row["id"]
+                return render_auth("Reset password", "Set a new password",
+                                   "Choose a new password for your account.",
+                                   "", _reset_form(), BACK_LINKS)
+            return render_auth("Forgot password", "Reset your password",
+                               "Enter your email and the recovery code shown when you signed up.",
+                               "Email or recovery code didn\u2019t match.", _forgot_form(), BACK_LINKS)
+        user_id = session.get("pw_reset_user")
+        if not user_id:
+            return redirect("/forgot")
+        pw = request.form.get("password", "")
+        if len(pw) < 8:
+            error = "Password must be at least 8 characters."
+        elif pw != request.form.get("password2", ""):
+            error = "Passwords do not match."
+        else:
+            error = None
+        if error:
+            return render_auth("Reset password", "Set a new password", "",
+                               error, _reset_form(), BACK_LINKS)
+        db.execute("UPDATE users SET password_hash = ? WHERE id = ?",
+                   (generate_password_hash(pw), user_id))
+        db.commit()
+        session.pop("pw_reset_user", None)
+        session["user_id"] = user_id
+        return redirect("/")
+    return render_auth("Forgot password", "Reset your password",
+                       "Enter your email and the recovery code shown when you signed up.",
+                       "", _forgot_form(), BACK_LINKS)
 
 
 @app.route("/logout")
@@ -217,8 +362,7 @@ def logout():
 
 @app.route("/api/me")
 def api_me():
-    return jsonify({"login_required": login_required_active(),
-                    "logged_in": bool(session.get("logged_in"))})
+    return jsonify({"logged_in": bool(current_user_id())})
 
 
 def utcnow():
@@ -230,9 +374,48 @@ def init_db(path=DB_PATH):
     conn = sqlite3.connect(path)
     try:
         conn.executescript(SCHEMA_SQL)
+        _migrate_accounts(conn)
         conn.commit()
     finally:
         conn.close()
+
+
+def _migrate_accounts(conn):
+    """Bring pre-accounts databases up to the multi-user schema.
+
+    - daily_updates gains user_id; its UNIQUE(stock_ticker, date) becomes
+      UNIQUE(user_id, stock_ticker, date) so each user has their own entries.
+    - paper_trades gains user_id.
+    Existing rows keep user_id NULL until the first signup adopts them.
+    """
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(daily_updates)")]
+    if "user_id" not in cols:
+        conn.executescript("""
+        CREATE TABLE daily_updates_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER REFERENCES users(id),
+            stock_ticker TEXT NOT NULL REFERENCES stocks(ticker),
+            date TEXT NOT NULL,
+            price REAL NOT NULL,
+            change_percent REAL NOT NULL DEFAULT 0,
+            rating TEXT NOT NULL,
+            notes TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE (user_id, stock_ticker, date)
+        );
+        INSERT INTO daily_updates_new
+            (id, user_id, stock_ticker, date, price, change_percent, rating, notes, created_at, updated_at)
+            SELECT id, NULL, stock_ticker, date, price, change_percent, rating, notes, created_at, updated_at
+            FROM daily_updates;
+        DROP TABLE daily_updates;
+        ALTER TABLE daily_updates_new RENAME TO daily_updates;
+        CREATE INDEX IF NOT EXISTS idx_updates_ticker_date ON daily_updates (stock_ticker, date);
+        CREATE INDEX IF NOT EXISTS idx_updates_user ON daily_updates (user_id, stock_ticker, date);
+        """)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(paper_trades)")]
+    if "user_id" not in cols:
+        conn.execute("ALTER TABLE paper_trades ADD COLUMN user_id INTEGER REFERENCES users(id)")
 
 
 def get_db():
@@ -297,12 +480,12 @@ def validate_update_payload(data):
     }, None
 
 
-def upsert_update(db, clean):
-    """Insert or update the row for (ticker, date). Returns (update, was_updated)."""
+def upsert_update(db, clean, user_id):
+    """Insert or update the row for (user, ticker, date). Returns (update, was_updated)."""
     now = utcnow()
     existing = db.execute(
-        "SELECT id FROM daily_updates WHERE stock_ticker = ? AND date = ?",
-        (clean["ticker"], clean["date"]),
+        "SELECT id FROM daily_updates WHERE user_id = ? AND stock_ticker = ? AND date = ?",
+        (user_id, clean["ticker"], clean["date"]),
     ).fetchone()
     if existing:
         db.execute(
@@ -316,9 +499,9 @@ def upsert_update(db, clean):
         return row_to_update(row), True
     cur = db.execute(
         """INSERT INTO daily_updates
-           (stock_ticker, date, price, change_percent, rating, notes, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (clean["ticker"], clean["date"], clean["price"], clean["change_percent"],
+           (user_id, stock_ticker, date, price, change_percent, rating, notes, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (user_id, clean["ticker"], clean["date"], clean["price"], clean["change_percent"],
          clean["rating"], clean["notes"], now, now),
     )
     db.commit()
@@ -340,9 +523,12 @@ def index():
 @app.route("/api/meta")
 def api_meta():
     db = get_db()
+    u = current_user_id()
     stocks = db.execute("SELECT COUNT(*) AS c FROM stocks").fetchone()["c"]
-    watchlist = db.execute("SELECT COUNT(*) AS c FROM stocks WHERE on_watchlist = 1").fetchone()["c"]
-    updates = db.execute("SELECT COUNT(*) AS c FROM daily_updates").fetchone()["c"]
+    watchlist = db.execute(
+        "SELECT COUNT(*) AS c FROM user_watchlist WHERE user_id = ?", (u,)).fetchone()["c"]
+    updates = db.execute(
+        "SELECT COUNT(*) AS c FROM daily_updates WHERE user_id = ?", (u,)).fetchone()["c"]
     return jsonify({"stocks": stocks, "watchlist": watchlist, "updates": updates})
 
 
@@ -363,7 +549,7 @@ def api_suggest_rating():
 def api_ml_signal(ticker):
     """ML signal for one ticker: predicted direction + learned rating suggestion."""
     from backend.ml_signals import signal_for
-    return jsonify(signal_for(get_db(), ticker))
+    return jsonify(signal_for(get_db(), ticker, current_user_id()))
 
 
 @app.route("/api/stocks")
@@ -374,19 +560,23 @@ def api_stocks():
     except ValueError:
         limit = 50
     db = get_db()
+    u = current_user_id()
+    wl = "EXISTS(SELECT 1 FROM user_watchlist w WHERE w.user_id = ? AND w.ticker = s.ticker)"
     if not q:
         rows = db.execute(
-            "SELECT ticker, company_name, sector, exchange, on_watchlist FROM stocks ORDER BY ticker LIMIT ?",
-            (limit,),
+            "SELECT s.ticker, s.company_name, s.sector, s.exchange, " + wl + " AS on_watchlist"
+            " FROM stocks s ORDER BY s.ticker LIMIT ?",
+            (u, limit),
         ).fetchall()
     else:
         like = "%" + q + "%"
         rows = db.execute(
-            """SELECT ticker, company_name, sector, exchange, on_watchlist FROM stocks
-               WHERE ticker LIKE ? OR company_name LIKE ?
-               ORDER BY CASE WHEN ticker LIKE ? THEN 0 WHEN ticker LIKE ? THEN 1 ELSE 2 END, ticker
+            """SELECT s.ticker, s.company_name, s.sector, s.exchange, """ + wl + """ AS on_watchlist
+               FROM stocks s
+               WHERE s.ticker LIKE ? OR s.company_name LIKE ?
+               ORDER BY CASE WHEN s.ticker LIKE ? THEN 0 WHEN s.ticker LIKE ? THEN 1 ELSE 2 END, s.ticker
                LIMIT ?""",
-            (like, like, q + "%", like, limit),
+            (u, like, like, q + "%", like, limit),
         ).fetchall()
     return jsonify([dict(r) for r in rows])
 
@@ -394,14 +584,18 @@ def api_stocks():
 @app.route("/api/watchlist")
 def api_watchlist():
     db = get_db()
+    u = current_user_id()
     rows = db.execute(
         """SELECT s.ticker, s.company_name, s.sector, s.exchange,
                   u.id AS uid, u.date, u.price, u.change_percent, u.rating, u.notes
-           FROM stocks s
-           LEFT JOIN daily_updates u ON u.stock_ticker = s.ticker
-               AND u.date = (SELECT MAX(date) FROM daily_updates WHERE stock_ticker = s.ticker)
-           WHERE s.on_watchlist = 1
-           ORDER BY s.ticker"""
+           FROM user_watchlist w
+           JOIN stocks s ON s.ticker = w.ticker
+           LEFT JOIN daily_updates u ON u.stock_ticker = s.ticker AND u.user_id = w.user_id
+               AND u.date = (SELECT MAX(date) FROM daily_updates
+                             WHERE stock_ticker = s.ticker AND user_id = w.user_id)
+           WHERE w.user_id = ?
+           ORDER BY s.ticker""",
+        (u,),
     ).fetchall()
     out = []
     for r in rows:
@@ -428,7 +622,10 @@ def api_watchlist_add():
     db = get_db()
     if not ticker_exists(db, ticker):
         return jsonify({"error": "unknown ticker: " + ticker}), 404
-    db.execute("UPDATE stocks SET on_watchlist = 1 WHERE ticker = ?", (ticker,))
+    db.execute(
+        "INSERT OR IGNORE INTO user_watchlist (user_id, ticker, created_at) VALUES (?, ?, ?)",
+        (current_user_id(), ticker, utcnow()),
+    )
     db.commit()
     return jsonify({"ok": True, "ticker": ticker})
 
@@ -436,7 +633,8 @@ def api_watchlist_add():
 @app.route("/api/watchlist/<ticker>", methods=["DELETE"])
 def api_watchlist_remove(ticker):
     db = get_db()
-    db.execute("UPDATE stocks SET on_watchlist = 0 WHERE ticker = ?", (ticker.upper(),))
+    db.execute("DELETE FROM user_watchlist WHERE user_id = ? AND ticker = ?",
+               (current_user_id(), ticker.upper()))
     db.commit()
     return jsonify({"ok": True})
 
@@ -445,23 +643,32 @@ def api_watchlist_remove(ticker):
 def api_stock_detail(ticker):
     ticker = ticker.upper()
     db = get_db()
+    u = current_user_id()
     s = db.execute(
-        "SELECT ticker, company_name, sector, exchange, on_watchlist FROM stocks WHERE ticker = ?",
+        "SELECT ticker, company_name, sector, exchange FROM stocks WHERE ticker = ?",
         (ticker,),
     ).fetchone()
     if not s:
         return jsonify({"error": "unknown ticker: " + ticker}), 404
+    on_watchlist = db.execute(
+        "SELECT 1 FROM user_watchlist WHERE user_id = ? AND ticker = ?", (u, ticker)
+    ).fetchone() is not None
     updates = db.execute(
-        "SELECT * FROM daily_updates WHERE stock_ticker = ? ORDER BY date DESC", (ticker,)
+        "SELECT * FROM daily_updates WHERE user_id = ? AND stock_ticker = ? ORDER BY date DESC",
+        (u, ticker),
     ).fetchall()
-    return jsonify({"stock": dict(s), "updates": [row_to_update(r) for r in updates]})
+    stock = dict(s)
+    stock["on_watchlist"] = on_watchlist
+    return jsonify({"stock": stock, "updates": [row_to_update(r) for r in updates]})
 
 
 @app.route("/api/stocks/<ticker>/updates")
 def api_stock_updates(ticker):
     db = get_db()
+    u = current_user_id()
     rows = db.execute(
-        "SELECT * FROM daily_updates WHERE stock_ticker = ? ORDER BY date DESC", (ticker.upper(),)
+        "SELECT * FROM daily_updates WHERE user_id = ? AND stock_ticker = ? ORDER BY date DESC",
+        (u, ticker.upper()),
     ).fetchall()
     return jsonify([row_to_update(r) for r in rows])
 
@@ -475,7 +682,7 @@ def api_update_create():
     db = get_db()
     if not ticker_exists(db, clean["ticker"]):
         return jsonify({"error": "unknown ticker: " + clean["ticker"]}), 400
-    upd, was_updated = upsert_update(db, clean)
+    upd, was_updated = upsert_update(db, clean, current_user_id())
     return jsonify({"update": upd, "updated": was_updated})
 
 
@@ -486,13 +693,15 @@ def api_update_edit(uid):
     if err:
         return jsonify({"error": err}), 400
     db = get_db()
-    if not db.execute("SELECT id FROM daily_updates WHERE id = ?", (uid,)).fetchone():
+    u = current_user_id()
+    if not db.execute("SELECT id FROM daily_updates WHERE id = ? AND user_id = ?",
+                      (uid, u)).fetchone():
         return jsonify({"error": "update not found"}), 404
     if not ticker_exists(db, clean["ticker"]):
         return jsonify({"error": "unknown ticker: " + clean["ticker"]}), 400
     clash = db.execute(
-        "SELECT id FROM daily_updates WHERE stock_ticker = ? AND date = ? AND id <> ?",
-        (clean["ticker"], clean["date"], uid),
+        "SELECT id FROM daily_updates WHERE user_id = ? AND stock_ticker = ? AND date = ? AND id <> ?",
+        (u, clean["ticker"], clean["date"], uid),
     ).fetchone()
     now = utcnow()
     if clash:
@@ -522,7 +731,8 @@ def api_update_edit(uid):
 @app.route("/api/updates/<int:uid>", methods=["DELETE"])
 def api_update_delete(uid):
     db = get_db()
-    db.execute("DELETE FROM daily_updates WHERE id = ?", (uid,))
+    db.execute("DELETE FROM daily_updates WHERE id = ? AND user_id = ?",
+               (uid, current_user_id()))
     db.commit()
     return jsonify({"ok": True})
 
@@ -539,7 +749,9 @@ def updates_to_csv(rows):
 @app.route("/api/export")
 def api_export():
     db = get_db()
-    rows = db.execute("SELECT * FROM daily_updates ORDER BY stock_ticker, date").fetchall()
+    rows = db.execute(
+        "SELECT * FROM daily_updates WHERE user_id = ? ORDER BY stock_ticker, date",
+        (current_user_id(),)).fetchall()
     stamp = datetime.now().strftime("%Y-%m-%d")
     return Response(
         updates_to_csv(rows),
@@ -576,6 +788,7 @@ def api_import():
     if rows and [c.strip().lower() for c in rows[0]] == CSV_COLUMNS:
         start = 1
     db = get_db()
+    u = current_user_id()
     imported = updated = skipped = 0
     errors = []
     for i in range(start, len(rows)):
@@ -599,7 +812,7 @@ def api_import():
             if len(errors) < 8:
                 errors.append("Row %d: unknown ticker: %s" % (i + 1, clean["ticker"]))
             continue
-        _, was_updated = upsert_update(db, clean)
+        _, was_updated = upsert_update(db, clean, u)
         if was_updated:
             updated += 1
         else:
@@ -644,23 +857,24 @@ def validate_trade_payload(data, db):
     }, None
 
 
-def paper_shares(db, ticker):
+def paper_shares(db, ticker, user_id):
     """Net paper shares currently held for a ticker."""
     row = db.execute(
         """SELECT COALESCE(SUM(CASE WHEN side = 'buy' THEN shares ELSE -shares END), 0) AS s
-           FROM paper_trades WHERE stock_ticker = ?""",
-        (ticker,)).fetchone()
+           FROM paper_trades WHERE user_id = ? AND stock_ticker = ?""",
+        (user_id, ticker)).fetchone()
     return row["s"] or 0.0
 
 
-def paper_portfolio(db):
+def paper_portfolio(db, user_id):
     """Average-cost positions from paper trades, valued at latest logged prices.
 
     Returns (positions, totals). Positions with no logged price yet get
     latest_price/market_value/unrealized_* = None.
     """
     trades = db.execute(
-        "SELECT * FROM paper_trades ORDER BY date, id").fetchall()
+        "SELECT * FROM paper_trades WHERE user_id = ? ORDER BY date, id",
+        (user_id,)).fetchall()
     pos = {}
     for t in trades:
         p = pos.setdefault(t["stock_ticker"],
@@ -675,8 +889,10 @@ def paper_portfolio(db):
             p["cost"] -= avg * t["shares"]
     latest = {r["stock_ticker"]: r["price"] for r in db.execute(
         """SELECT stock_ticker, price FROM daily_updates u
-           WHERE date = (SELECT MAX(date) FROM daily_updates
-                         WHERE stock_ticker = u.stock_ticker)""").fetchall()}
+           WHERE user_id = ?
+             AND date = (SELECT MAX(date) FROM daily_updates
+                         WHERE user_id = ? AND stock_ticker = u.stock_ticker)""",
+        (user_id, user_id)).fetchall()}
     positions = []
     for ticker in sorted(pos):
         p = pos[ticker]
@@ -709,28 +925,30 @@ def paper_portfolio(db):
 def api_paper_trades():
     db = get_db()
     rows = db.execute(
-        "SELECT * FROM paper_trades ORDER BY date DESC, id DESC").fetchall()
+        "SELECT * FROM paper_trades WHERE user_id = ? ORDER BY date DESC, id DESC",
+        (current_user_id(),)).fetchall()
     return jsonify([dict(r) for r in rows])
 
 
 @app.route("/api/paper-trades", methods=["POST"])
 def api_paper_trade_add():
     db = get_db()
+    u = current_user_id()
     clean, err = validate_trade_payload(
         request.get_json(force=True, silent=True) or {}, db)
     if err:
         return jsonify({"error": err}), 400
     if clean["side"] == "sell":
-        held = paper_shares(db, clean["ticker"])
+        held = paper_shares(db, clean["ticker"], u)
         if clean["shares"] > held + 1e-9:
             return jsonify({"error": "you only hold %.4g paper shares of %s"
                                      % (held, clean["ticker"])}), 400
     now = utcnow()
     cur = db.execute(
         """INSERT INTO paper_trades
-           (stock_ticker, date, side, shares, price, notes, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (clean["ticker"], clean["date"], clean["side"], clean["shares"],
+           (user_id, stock_ticker, date, side, shares, price, notes, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (u, clean["ticker"], clean["date"], clean["side"], clean["shares"],
          clean["price"], clean["notes"], now))
     db.commit()
     row = db.execute("SELECT * FROM paper_trades WHERE id = ?",
@@ -741,7 +959,8 @@ def api_paper_trade_add():
 @app.route("/api/paper-trades/<int:tid>", methods=["DELETE"])
 def api_paper_trade_delete(tid):
     db = get_db()
-    cur = db.execute("DELETE FROM paper_trades WHERE id = ?", (tid,))
+    cur = db.execute("DELETE FROM paper_trades WHERE id = ? AND user_id = ?",
+                     (tid, current_user_id()))
     db.commit()
     if not cur.rowcount:
         return jsonify({"error": "trade not found"}), 404
@@ -751,7 +970,7 @@ def api_paper_trade_delete(tid):
 @app.route("/api/paper-portfolio")
 def api_paper_portfolio():
     db = get_db()
-    positions, totals = paper_portfolio(db)
+    positions, totals = paper_portfolio(db, current_user_id())
     return jsonify({"positions": positions, "totals": totals})
 
 
