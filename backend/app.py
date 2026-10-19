@@ -50,6 +50,36 @@ CREATE TABLE IF NOT EXISTS daily_updates (
 CREATE INDEX IF NOT EXISTS idx_updates_ticker_date ON daily_updates (stock_ticker, date);
 """
 
+# Auto-rating ("breakout") rule: strong single-day moves are bucketed into
+# buy/sell ratings. |change| >= BREAKOUT_PCT suggests buy/sell,
+# |change| >= STRONG_PCT suggests strong buy/strong sell, anything
+# smaller suggests hold. The Log Update editor calls suggest_rating()
+# through /api/suggest-rating and pre-fills the rating (still editable).
+BREAKOUT_PCT = 2.0
+STRONG_PCT = 5.0
+
+
+def suggest_rating(change_percent):
+    """Suggest a rating from the day's % move.
+
+    Returns (rating, rule_text). Up more than BREAKOUT_PCT -> buy side,
+    down more than BREAKOUT_PCT -> sell side, else hold.
+    """
+    try:
+        chg = float(change_percent)
+    except (TypeError, ValueError):
+        return None, "change_percent must be a number"
+    if chg >= STRONG_PCT:
+        return "strong_buy", "up %.1f%% (≥ +%.0f%%)" % (chg, STRONG_PCT)
+    if chg >= BREAKOUT_PCT:
+        return "buy", "up %.1f%% (≥ +%.0f%%)" % (chg, BREAKOUT_PCT)
+    if chg <= -STRONG_PCT:
+        return "strong_sell", "down %.1f%% (≤ -%.0f%%)" % (abs(chg), STRONG_PCT)
+    if chg <= -BREAKOUT_PCT:
+        return "sell", "down %.1f%% (≤ -%.0f%%)" % (abs(chg), BREAKOUT_PCT)
+    return "hold", "move %.1f%% within ±%.0f%%" % (chg, BREAKOUT_PCT)
+
+
 app = Flask(__name__, static_folder=ROOT, static_url_path="")
 
 
@@ -176,6 +206,19 @@ def api_meta():
     watchlist = db.execute("SELECT COUNT(*) AS c FROM stocks WHERE on_watchlist = 1").fetchone()["c"]
     updates = db.execute("SELECT COUNT(*) AS c FROM daily_updates").fetchone()["c"]
     return jsonify({"stocks": stocks, "watchlist": watchlist, "updates": updates})
+
+
+@app.route("/api/suggest-rating")
+def api_suggest_rating():
+    """Suggest a rating for a given day % move (auto-rating rule)."""
+    raw = (request.args.get("change_percent") or "").strip()
+    if raw == "":
+        return jsonify({"error": "change_percent is required"}), 400
+    rating, rule = suggest_rating(raw)
+    if rating is None:
+        return jsonify({"error": rule}), 400
+    return jsonify({"rating": rating, "rule": rule,
+                    "change_percent": float(raw)})
 
 
 @app.route("/api/stocks")

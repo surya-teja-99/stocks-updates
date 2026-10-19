@@ -471,6 +471,18 @@ async function renderDetail(ticker) {
   });
 }
 
+/** Auto-rating: when the Change % field moves, ask the server for the
+ *  breakout-bucket rating and pre-fill the rating select (still editable). */
+async function autoSuggestRating(chgEl, ratingEl, hintEl) {
+  const raw = chgEl.value.trim();
+  if (raw === '' || isNaN(Number(raw))) { hintEl.textContent = ''; return; }
+  try {
+    const s = await api.get('/api/suggest-rating?change_percent=' + encodeURIComponent(raw));
+    ratingEl.value = s.rating;
+    hintEl.textContent = 'Auto: ' + RATINGS[s.rating].label + ' (' + s.rule + ')';
+  } catch (e) { hintEl.textContent = ''; }
+}
+
 function renderEditPanel(ticker) {
   const u = editingUpdate;
   const panel = $('#edit-panel');
@@ -482,7 +494,7 @@ function renderEditPanel(ticker) {
     + '<div class="field"><label for="e-chg">Change %</label><input id="e-chg" type="number" step="0.01" value="' + esc(u.change_percent) + '"></div>'
     + '<div class="field"><label for="e-rating">Rating</label><select id="e-rating">'
     + RATING_KEYS.map((k) => '<option value="' + k + '"' + (u.rating === k ? ' selected' : '') + '>' + esc(RATINGS[k].label) + '</option>').join('')
-    + '</select></div>'
+    + '</select><small class="auto-hint" id="e-rating-hint"></small></div>'
     + '<div class="field wide"><label for="e-notes">Notes</label><textarea id="e-notes">' + esc(u.notes) + '</textarea></div>'
     + '</div><div class="form-actions">'
     + '<button class="btn primary" id="e-save">Save changes</button>'
@@ -490,6 +502,7 @@ function renderEditPanel(ticker) {
     + '</div></div>';
   panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   $('#e-cancel').addEventListener('click', () => { editingUpdate = null; panel.innerHTML = ''; });
+  $('#e-chg').addEventListener('input', () => autoSuggestRating($('#e-chg'), $('#e-rating'), $('#e-rating-hint')));
   $('#e-save').addEventListener('click', async () => {
     try {
       await Store.updateUpdate(u.id, {
@@ -579,7 +592,7 @@ async function renderEditor(preselect) {
     + '<div class="field"><label for="ed-chg">Change %</label><input id="ed-chg" type="number" step="0.01" placeholder="e.g. 1.25"></div>'
     + '<div class="field"><label for="ed-rating">Rating</label><select id="ed-rating">'
     + RATING_KEYS.map((k) => '<option value="' + k + '">' + esc(RATINGS[k].label) + '</option>').join('')
-    + '</select></div>'
+    + '</select><small class="auto-hint" id="ed-rating-hint"></small></div>'
     + '<div class="field wide"><label for="ed-notes">Notes</label><textarea id="ed-notes" placeholder="Why this rating? Key observations\u2026"></textarea></div>'
     + '</div><div class="form-actions">'
     + '<button class="btn primary" id="ed-save">Save update</button>'
@@ -605,6 +618,7 @@ async function renderEditor(preselect) {
   $('#step-prev').addEventListener('click', () => go(-1));
   $('#step-next').addEventListener('click', () => go(1));
   $('#ed-stock').addEventListener('change', (e) => { editorIdx = Number(e.target.value); renderEditor(null); });
+  $('#ed-chg').addEventListener('input', () => autoSuggestRating($('#ed-chg'), $('#ed-rating'), $('#ed-rating-hint')));
 
   $('#ed-save').addEventListener('click', async () => {
     try {

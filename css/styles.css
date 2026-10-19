@@ -300,3 +300,12 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .dir-row .dir-ex { display: none; }
   th.hide-m, td.hide-m { display: none; }
 }
+
+/* Auto-rating hint under the rating select in the editors. */
+.auto-hint {
+  display: block;
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin-top: 4px;
+  min-height: 1em;
+}
