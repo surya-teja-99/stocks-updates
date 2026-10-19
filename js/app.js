@@ -699,6 +699,30 @@ function initSearch() {
   });
 }
 
+/* ---------------- research: external analyst-rating sources ---------------- */
+const RESEARCH_LINKS = [
+  { name: 'Yahoo Finance', desc: 'Analyst buy/hold/sell breakdowns, upgrades and downgrades, market news.', url: 'https://finance.yahoo.com/' },
+  { name: 'MarketBeat', desc: 'Daily feed of analyst rating changes and price targets.', url: 'https://www.marketbeat.com/ratings/' },
+  { name: 'TipRanks', desc: 'Analyst ratings plus each analyst\u2019s track record.', url: 'https://www.tipranks.com/' },
+  { name: 'Nasdaq', desc: 'Market activity, analyst research and stock news.', url: 'https://www.nasdaq.com/' },
+  { name: 'MarketWatch', desc: 'Market news, analysis and investing insight.', url: 'https://www.marketwatch.com/' },
+  { name: 'Finviz', desc: 'Stock screener, heat maps and charts.', url: 'https://finviz.com/' },
+];
+
+async function renderResearch() {
+  const view = $('#view');
+  view.innerHTML = '<div class="page-head"><div><h1>Stock Recommendations According to News</h1>'
+    + '<p>Analyst ratings and market news from external sources. Links open in a new tab \u2014 '
+    + 'read what the analysts say, then log your own rating in your journal.</p></div></div>'
+    + '<div class="panel">'
+    + RESEARCH_LINKS.map((l) => '<div class="dir-row">'
+      + '<div><div class="dir-ticker">' + esc(l.name) + '</div>'
+      + '<div class="company">' + esc(l.desc) + '</div></div>'
+      + '<a class="btn small" href="' + esc(l.url) + '" target="_blank" rel="noopener">Open \u2197</a>'
+      + '</div>').join('')
+    + '</div>';
+}
+
 /* ---------------- router ---------------- */
 function setActiveNav(page) {
   $$('[data-nav]').forEach((a) => a.classList.toggle('active', a.getAttribute('data-nav') === page));
@@ -717,6 +741,7 @@ async function router() {
     else if (page === 'directory') { setActiveNav('directory'); await renderDirectory(); }
     else if (page === 'stock' && param) { setActiveNav(''); await renderDetail(param); }
     else if (page === 'update') { setActiveNav('update'); editorIdx = 0; await renderEditor(param); }
+    else if (page === 'research') { setActiveNav('research'); renderResearch(); }
     else { setActiveNav('dashboard'); await renderDashboard(); }
   } catch (e) {
     $('#view').innerHTML = '<div class="panel"><div class="empty">Something went wrong:<br>' + esc(e.message) + '</div></div>';
