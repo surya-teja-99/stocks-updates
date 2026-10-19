@@ -159,19 +159,29 @@ def require_login():
 LOGIN_PAGE = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Login \\u2014 Stocks Updates</title>
+<title>Log in — Stocks Updates</title>
 <style>
-body{background:#0b0f17;color:#e8ecf3;font-family:system-ui,sans-serif;
-display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
-.box{background:#121826;border:1px solid #1f2942;border-radius:12px;padding:32px;width:min(360px,90vw)}
-h1{margin:0 0 6px;font-size:1.3rem}p{color:#8d99ae;font-size:.9rem;margin:0 0 16px}
-input{width:100%;box-sizing:border-box;background:#0b0f17;border:1px solid #2a3654;color:#e8ecf3;
-border-radius:8px;padding:10px;margin-bottom:12px;font-size:1rem}
-button{width:100%;background:#5b9bff;border:0;color:#06101f;font-weight:700;border-radius:8px;
-padding:11px;font-size:1rem;cursor:pointer}
-.err{color:#ff7b7b;font-size:.88rem;margin-bottom:12px;min-height:1.2em}
+body{background:#060a13;color:#f1f5fb;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;
+display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;
+background-image:radial-gradient(900px 480px at 85% -10%,rgba(91,155,255,.1),transparent 60%),radial-gradient(700px 420px at 10% 0%,rgba(143,107,255,.08),transparent 60%)}
+.box{background:linear-gradient(180deg,rgba(26,36,64,.6),rgba(14,21,36,.95));border:1px solid rgba(148,163,184,.16);
+border-radius:16px;padding:36px;width:min(380px,92vw);box-shadow:0 18px 60px rgba(0,0,0,.5);animation:rise .5s cubic-bezier(.22,.68,.32,1)}
+@keyframes rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+.mark{width:42px;height:42px;border-radius:12px;background:linear-gradient(135deg,#4f8cff,#7a5cff);
+display:flex;align-items:center;justify-content:center;margin-bottom:18px;box-shadow:0 8px 24px rgba(99,132,255,.4)}
+h1{margin:0 0 6px;font-size:1.35rem;font-weight:800;letter-spacing:-.01em}
+p{color:#93a0b8;font-size:.9rem;margin:0 0 20px;line-height:1.5}
+input{width:100%;box-sizing:border-box;background:rgba(6,10,19,.8);border:1px solid #26314d;color:#f1f5fb;
+border-radius:10px;padding:11px 13px;margin-bottom:12px;font-size:1rem;transition:border-color .18s,box-shadow .18s}
+input:focus{outline:none;border-color:rgba(91,155,255,.6);box-shadow:0 0 0 3px rgba(91,155,255,.16)}
+button{width:100%;background:linear-gradient(135deg,#4f8cff,#7a5cff);border:0;color:#fff;font-weight:700;border-radius:10px;
+padding:12px;font-size:1rem;cursor:pointer;box-shadow:0 6px 22px rgba(99,132,255,.38);transition:transform .16s,box-shadow .18s,filter .18s}
+button:hover{transform:translateY(-1px);filter:brightness(1.06);box-shadow:0 10px 30px rgba(99,132,255,.5)}
+button:active{transform:translateY(1px)}
+.err{color:#fda4af;font-size:.88rem;margin-bottom:12px;min-height:1.2em}
 </style></head><body><div class="box">
-<h1>Stocks Updates</h1><p>Log in to your journal.</p>
+<div class="mark"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17 L8 12 L12 14 L17 7 L21 9"/><path d="M17 7 L21 9 L19 13"/></svg></div>
+<h1>Welcome back</h1><p>Log in to your Stocks Updates journal.</p>
 <div class="err">__ERROR__</div>
 <form method="post"><input type="email" name="email" placeholder="Email" autocomplete="username" autofocus>
 <input type="password" name="password" placeholder="Password" autocomplete="current-password">

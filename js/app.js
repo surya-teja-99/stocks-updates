@@ -583,17 +583,24 @@ function priceChartSVG(asc) {
   const x = (i) => P.l + (asc.length === 1 ? iw / 2 : (i / (asc.length - 1)) * iw);
   const y = (p) => P.t + ih - ((p - min) / (max - min)) * ih;
 
-  let s = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Price chart">';
+  let s = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Price chart">'
+    + '<defs><linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">'
+    + '<stop offset="0" stop-color="#5b9bff" stop-opacity="0.32"/>'
+    + '<stop offset="1" stop-color="#5b9bff" stop-opacity="0"/></linearGradient>'
+    + '<linearGradient id="lineGrad" x1="0" y1="0" x2="1" y2="0">'
+    + '<stop offset="0" stop-color="#8f6bff"/><stop offset="1" stop-color="#5b9bff"/></linearGradient></defs>';
   for (let g = 0; g <= 4; g++) {
     const v = min + ((max - min) * g) / 4;
     const gy = y(v);
-    s += '<line x1="' + P.l + '" y1="' + gy.toFixed(1) + '" x2="' + (W - P.r) + '" y2="' + gy.toFixed(1) + '" stroke="#1b2436" stroke-width="1"/>'
-      + '<text x="' + (P.l - 6) + '" y="' + (gy + 3.5).toFixed(1) + '" text-anchor="end" font-size="10" fill="#5d6a84">' + fmtPrice(v) + '</text>';
+    s += '<line x1="' + P.l + '" y1="' + gy.toFixed(1) + '" x2="' + (W - P.r) + '" y2="' + gy.toFixed(1) + '" stroke="#1c2740" stroke-width="1"/>'
+      + '<text x="' + (P.l - 6) + '" y="' + (gy + 3.5).toFixed(1) + '" text-anchor="end" font-size="10" fill="#5f6c88">' + fmtPrice(v) + '</text>';
   }
   const pts = asc.map((u, i) => x(i).toFixed(1) + ',' + y(u.price).toFixed(1)).join(' ');
-  s += '<polyline points="' + pts + '" fill="none" stroke="#5b9bff" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>';
+  const baseY = y(min).toFixed(1);
+  s += '<polygon points="' + P.l + ',' + baseY + ' ' + pts + ' ' + (W - P.r) + ',' + baseY + '" fill="url(#areaGrad)"/>';
+  s += '<polyline points="' + pts + '" fill="none" stroke="url(#lineGrad)" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/>';
   asc.forEach((u, i) => {
-    s += '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(u.price).toFixed(1) + '" r="3.4" fill="#0b0f17" stroke="#5b9bff" stroke-width="2">'
+    s += '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(u.price).toFixed(1) + '" r="3.6" fill="#060a13" stroke="#5b9bff" stroke-width="2">'
       + '<title>' + esc(u.date) + ': $' + fmtPrice(u.price) + '</title></circle>';
   });
   const short = (iso) => { const p = String(iso).split('-'); return p[1] + '/' + p[2] + '/' + String(p[0]).slice(2); };
